@@ -188,7 +188,7 @@ function BusCard({ bus, onBook }: { bus: typeof ALL_BUSES[0]; onBook: (b: typeof
           <View style={bc.fullBadge}><Text style={bc.fullBadgeText}>FULLY BOOKED</Text></View>
         ) : (
           <TouchableOpacity style={[bc.bookBtn, { backgroundColor: bus.color }]} onPress={() => onBook(bus)}>
-            <Text style={bc.bookBtnText}>Book Now →</Text>
+            <Text style={bc.bookBtnText}>Choose Seat →</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -384,7 +384,29 @@ export default function SearchResultsScreen() {
 
   const [sortBy, setSortBy] = useState<SortKey>("time");
   const [filterClass, setFilterClass] = useState<FilterClass>("All");
-  const [selectedBus, setSelectedBus] = useState<typeof ALL_BUSES[0] | null>(null);
+  const [selectedBus] = useState<typeof ALL_BUSES[0] | null>(null);
+
+  const handleBookBus = (bus: typeof ALL_BUSES[0]) => {
+    router.push({
+      pathname: "/seat-selection",
+      params: {
+        busId: bus.id,
+        agency: bus.agency,
+        from,
+        to,
+        date,
+        dep: bus.dep,
+        arr: bus.arr,
+        plate: bus.plate,
+        busClass: bus.class,
+        price: String(bus.price),
+        color: bus.color.replace("#", "%23"),
+        totalSeats: String(bus.total),
+        takenSeats: String(bus.total - bus.seats),
+        rating: String(bus.rating),
+      },
+    });
+  };
   const [showOnlyAvailable, setShowOnlyAvailable] = useState(false);
 
   const rawBuses = useMemo(() => getAvailableBuses(from, to, time), [from, to, time]);
@@ -493,7 +515,7 @@ export default function SearchResultsScreen() {
           </View>
         ) : (
           filtered.map(bus => (
-            <BusCard key={bus.id} bus={bus} onBook={b => setSelectedBus(b)} />
+            <BusCard key={bus.id} bus={bus} onBook={b => handleBookBus(b)} />
           ))
         )}
         <View style={{ height: 32 }} />
