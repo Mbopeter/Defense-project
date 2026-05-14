@@ -574,7 +574,7 @@ export default function HomeScreen() {
             <View style={s.swapLine} />
             <TouchableOpacity
               style={s.swapBtn}
-              onPress={() => { const tmp = from; setFrom(to); setTo(tmp); }}
+            onPress={() => { const tmp = from; setFrom(to); setTo(tmp); setSearchError(""); }}  
             >
               <Text style={{ fontSize: 17, color: "#fff", fontWeight: "900" }}>⇅</Text>
             </TouchableOpacity>

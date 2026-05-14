@@ -34,14 +34,13 @@ function generateSeatMap(busId: string, totalSeats: number, takenCount: number) 
 
   // Driver seat is always row 0 (not selectable)
   // Seats are numbered 1..totalSeats
-  let i = 0;
-  let attempt = 0;
-  while (taken.size < takenCount && attempt < 10000) {
-    attempt++;
-    const val = ((seed * (attempt * 7 + 13)) % totalSeats) + 1;
-    taken.add(val);
-    i++;
-  }
+const actualTaken = Math.min(takenCount, totalSeats);
+const allSeats = Array.from({ length: totalSeats }, (_, i) => i + 1);
+for (let i = allSeats.length - 1; i > 0; i--) {
+  const j = ((seed * (i + 7) * 31) % (i + 1) + (i + 1)) % (i + 1);
+  [allSeats[i], allSeats[j]] = [allSeats[j], allSeats[i]];
+}
+return new Set(allSeats.slice(0, actualTaken));
   return taken;
 }
 
@@ -56,7 +55,10 @@ function buildRows(totalSeats: number) {
   // Rows 2..N: 4-seat rows (2+2)
   // Last row: 5-seat bench
 
-  const regularRows = Math.floor((totalSeats - 5) / 4);
+  const backBenchCount = totalSeats >= 9 ? 5 : totalSeats;
+  const regularSeatCount = totalSeats - backBenchCount;
+  const regularRows = Math.ceil(regularSeatCount / 4);
+// e.g. 40 seats → 35/4 = 9 rows × 4 = 35 + 5 bench = 40 ✓
   const hasBackBench = totalSeats >= 5;
 
   for (let r = 1; r <= regularRows; r++) {
@@ -438,13 +440,13 @@ export default function SeatSelectionScreen() {
         busClass={busClass}
         price={priceNum}
         color={busColor}
-        onClose={() => {
-          setShowConfirm(false);
-          if (selectedSeats.size > 0) {
-            router.back();
-            router.back();
-          }
-        }}
+       onClose={(booked?: boolean) => {
+       setShowConfirm(false);
+       if (booked) {
+       setSelectedSeats(new Set());
+       router.replace("/(tabs)");
+  }
+}}
       />
 
       {/* ── HEADER ── */}

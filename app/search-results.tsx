@@ -90,8 +90,9 @@ function getAvailableBuses(from: string, to: string, time: string) {
     const fromMatch = b.from.toLowerCase() === from.toLowerCase();
     const toMatch   = b.to.toLowerCase()   === to.toLowerCase();
     // time filter: if specific time given match dep hour, otherwise show all
-    const timeMatch = !time || time === "—" || b.dep === time ||
-      (time !== "08:00" && time !== "19:00"); // custom time → show all
+   const noTimeFilter = !time || time === "—";
+  const isFixedTime = time === "08:00" || time === "19:00";
+  const timeMatch = noTimeFilter || !isFixedTime || b.dep === time;// custom time → show all
     return fromMatch && toMatch && timeMatch;
   });
 }
@@ -261,7 +262,9 @@ function BookingModal({ bus, from, to, date, onClose }: {
 
   if (!bus) return null;
 
-  const bookingRef = `CB-${Date.now().toString().slice(-6)}`;
+  const bookingRef = React.useRef(
+  `CB-${Date.now().toString().slice(-6)}`
+ ).current;
 
   return (
     <Modal visible={!!bus} animationType="slide" transparent onRequestClose={onClose}>
@@ -385,7 +388,7 @@ export default function SearchResultsScreen() {
 
   const [sortBy, setSortBy] = useState<SortKey>("time");
   const [filterClass, setFilterClass] = useState<FilterClass>("All");
-  const [selectedBus] = useState<typeof ALL_BUSES[0] | null>(null);
+  const [selectedBus, setSelectedBus] = useState<typeof ALL_BUSES[0] | null>(null);
 
   const handleBookBus = (bus: typeof ALL_BUSES[0]) => {
     router.push({
