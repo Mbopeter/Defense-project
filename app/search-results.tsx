@@ -128,6 +128,7 @@ function BusCard({ bus, onBook }: { bus: typeof ALL_BUSES[0]; onBook: (b: typeof
       style={[bc.card, isFull && bc.cardFull]}
       onPress={() => !isFull && onBook(bus)}
       activeOpacity={isFull ? 1 : 0.8}
+      disabled={isFull}
     >
       {/* Left accent */}
       <View style={[bc.accent, { backgroundColor: bus.color }]} />
