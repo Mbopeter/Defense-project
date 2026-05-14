@@ -25,125 +25,157 @@ const TEXT_C = "#1E1B4B";
 const MUTED = "#6B7280";
 const BORDER = "#DDD6FE";
 
-// ─── SEAT LAYOUT GENERATOR ───────────────────────────────────────────────────
-// Generates a deterministic "taken" pattern based on bus id + seat count
-function generateSeatMap(busId: string, totalSeats: number, takenCount: number) {
-  // Use busId as a seed for consistent taken seats per bus
-  const seed = busId.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const taken = new Set<number>();
+// ─── SEAT LAYOUT DEFINITION ──────────────────────────────────────────────────
+//
+//  Layout spec (13 rows + front bench + back bench):
+//
+//  Front bench : P1, P2
+//  Row 1  left : Driver seat only (not bookable)
+//  Row 1  right: B1, B2
+//  Row 2  left : A1, A2, A3   |  RIGHT: DOOR (no B seats this row)
+//  Rows 3–13 left : A4–A36 (3 per row)
+//  Rows 3–13 right: B3–B26  (2 per row, continues from B3 since B1-B2 are row1)
+//  Back bench  : C1–C7
+//
+// Total bookable seats: 2 (P) + 26 (B) + 36 (A) + 7 (C) = 71
 
-  // Driver seat is always row 0 (not selectable)
-  // Seats are numbered 1..totalSeats
-const actualTaken = Math.min(takenCount, totalSeats);
-const allSeats = Array.from({ length: totalSeats }, (_, i) => i + 1);
-for (let i = allSeats.length - 1; i > 0; i--) {
-  const j = ((seed * (i + 7) * 31) % (i + 1) + (i + 1)) % (i + 1);
-  [allSeats[i], allSeats[j]] = [allSeats[j], allSeats[i]];
+const FRONT_BENCH_IDS: string[] = ["P1", "P2"];
+const BACK_BENCH_IDS: string[]  = ["C1", "C2", "C3", "C4", "C5", "C6", "C7"];
+
+// All seat IDs the passenger can actually book
+const ALL_SEAT_IDS: string[] = [
+  ...FRONT_BENCH_IDS,
+  ...Array.from({ length: 36 }, (_, i) => `A${i + 1}`), // A1–A36
+  ...Array.from({ length: 26 }, (_, i) => `B${i + 1}`), // B1–B26
+  ...BACK_BENCH_IDS,
+];
+
+// Row descriptor
+interface BusRow {
+  rowNum: number;
+  isDriverRow: boolean; // row 1 left has driver seat, not bookable
+  isDoorRow: boolean;   // row 2 right has door, no B seats
+  leftSeats: string[];  // A-column IDs (empty for driver row)
+  rightSeats: string[]; // B-column IDs (empty for door row)
 }
-return new Set(allSeats.slice(0, actualTaken));
-  return taken;
-}
 
-// Seat layout: 70 seats → 18 rows of 4 seats (A B _ C D) + 2 back bench seats
-// Row layout: [A, B, aisle, C, D]
-function buildRows(totalSeats: number) {
-  // Standard layout: rows of 4 except last row of 5
-  const rows: { rowNum: number; seats: (number | null)[] }[] = [];
-  let seatNum = 1;
+function buildSeatLayout(): BusRow[] {
+  const rows: BusRow[] = [];
 
-  // Row 1: driver row (special)
-  // Rows 2..N: 4-seat rows (2+2)
-  // Last row: 5-seat bench
+  for (let r = 1; r <= 13; r++) {
+    const isDriverRow = r === 1;
+    const isDoorRow   = r === 2;
 
-  const backBenchCount = totalSeats >= 9 ? 5 : totalSeats;
-  const regularSeatCount = totalSeats - backBenchCount;
-  const regularRows = Math.ceil(regularSeatCount / 4);
-// e.g. 40 seats → 35/4 = 9 rows × 4 = 35 + 5 bench = 40 ✓
-  const hasBackBench = totalSeats >= 5;
-
-  for (let r = 1; r <= regularRows; r++) {
-    const row = {
-      rowNum: r,
-      seats: [seatNum, seatNum + 1, null, seatNum + 2, seatNum + 3] as (number | null)[],
-    };
-    seatNum += 4;
-    rows.push(row);
-  }
-
-  // Back bench (last row — 5 seats across)
-  if (hasBackBench && seatNum <= totalSeats) {
-    const backSeats: (number | null)[] = [];
-    for (let b = 0; b < 5 && seatNum <= totalSeats; b++) {
-      backSeats.push(seatNum++);
+    // Left (A) seats: row 1 has driver only, row 2 has A1-A3, rows 3+ continue
+    let leftSeats: string[] = [];
+    if (!isDriverRow) {
+      // row 2 → A1,A2,A3 ; row 3 → A4,A5,A6 ; ...
+      const base = (r - 2) * 3; // row2→0, row3→3, row4→6, ...
+      leftSeats = [`A${base + 1}`, `A${base + 2}`, `A${base + 3}`];
     }
-    rows.push({ rowNum: regularRows + 1, seats: backSeats });
+
+    // Right (B) seats: row 1 gets B1,B2 ; row 2 is door (no seats) ; rows 3+ continue
+    let rightSeats: string[] = [];
+    if (!isDoorRow) {
+      // row 1 → B1,B2 ; row 3 → B3,B4 ; row 4 → B5,B6 ; ...
+      let base: number;
+      if (isDriverRow) {
+        base = 0; // B1, B2
+      } else {
+        // rows 3–13 (index 2–12): skip the door row gap
+        // row 3 is index 2 after skipping row 2 door → B3,B4
+        base = 2 + (r - 3) * 2; // row3→2, row4→4, row5→6, ...
+      }
+      rightSeats = [`B${base + 1}`, `B${base + 2}`];
+    }
+
+    rows.push({ rowNum: r, isDriverRow, isDoorRow, leftSeats, rightSeats });
+  }
+  return rows;
+}
+
+// ─── TAKEN SEAT GENERATOR ────────────────────────────────────────────────────
+// Deterministic Fisher-Yates shuffle seeded by busId — no loops, no collision risk
+function generateSeatMap(busId: string, takenCount: number): Set<string> {
+  const seed = busId.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  const seats = [...ALL_SEAT_IDS];
+
+  for (let i = seats.length - 1; i > 0; i--) {
+    const j = ((seed * (i + 7) * 31) % (i + 1) + (i + 1)) % (i + 1);
+    [seats[i], seats[j]] = [seats[j], seats[i]];
   }
 
-  return rows;
+  return new Set(seats.slice(0, Math.min(takenCount, seats.length)));
 }
 
 // ─── SEAT BUTTON ─────────────────────────────────────────────────────────────
 function SeatButton({
-  seatNum,
+  seatId,
   status,
-  selected,
   onPress,
   color,
+  small = false,
 }: {
-  seatNum: number | null;
+  seatId: string;
   status: "available" | "taken" | "selected";
-  selected: boolean;
   onPress: () => void;
   color: string;
+  small?: boolean;
 }) {
-  if (seatNum === null) {
-    // aisle spacer
-    return <View style={sb.aisle} />;
-  }
-
   const bg =
-    status === "taken"
-      ? "#E5E7EB"
-      : status === "selected"
-      ? color
-      : CARD;
+    status === "taken"    ? "#E5E7EB" :
+    status === "selected" ? color     : CARD;
 
   const borderColor =
-    status === "taken"
-      ? "#D1D5DB"
-      : status === "selected"
-      ? color
-      : BORDER;
+    status === "taken"    ? "#D1D5DB" :
+    status === "selected" ? color     : BORDER;
 
   const textColor =
-    status === "taken"
-      ? "#9CA3AF"
-      : status === "selected"
-      ? "#fff"
-      : TEXT_C;
+    status === "taken"    ? "#9CA3AF" :
+    status === "selected" ? "#fff"    : TEXT_C;
+
+  const size = small ? 40 : 46;
 
   return (
     <TouchableOpacity
-      style={[sb.seat, { backgroundColor: bg, borderColor }]}
+      style={[
+        sb.seat,
+        {
+          backgroundColor: bg,
+          borderColor,
+          width: size,
+          height: size,
+        },
+      ]}
       onPress={onPress}
       disabled={status === "taken"}
       activeOpacity={0.7}
     >
       {status === "taken" ? (
-        <Text style={[sb.seatIcon]}>✕</Text>
+        <Text style={sb.seatIcon}>✕</Text>
       ) : status === "selected" ? (
         <Text style={[sb.seatIcon, { color: "#fff" }]}>✓</Text>
       ) : (
-        <Text style={[sb.seatNum, { color: textColor }]}>{seatNum}</Text>
+        <Text style={[sb.seatId, { color: textColor, fontSize: small ? 9 : 10 }]}>
+          {seatId}
+        </Text>
       )}
     </TouchableOpacity>
   );
 }
 
+// Non-interactive driver seat placeholder
+function DriverSeat() {
+  return (
+    <View style={sb.driverSeat}>
+      <Text style={sb.driverIcon}>👨‍✈️</Text>
+      <Text style={sb.driverLbl}>Drv</Text>
+    </View>
+  );
+}
+
 const sb = StyleSheet.create({
   seat: {
-    width: 46,
-    height: 46,
     borderRadius: 10,
     borderWidth: 2,
     alignItems: "center",
@@ -154,15 +186,26 @@ const sb = StyleSheet.create({
     shadowRadius: 3,
     elevation: 2,
   },
-  seatNum: { fontSize: 12, fontWeight: "800" },
-  seatIcon: { fontSize: 14, fontWeight: "900", color: "#9CA3AF" },
-  aisle: { width: 20 },
+  seatId: { fontWeight: "800" },
+  seatIcon: { fontSize: 13, fontWeight: "900", color: "#9CA3AF" },
+  driverSeat: {
+    width: 46,
+    height: 46,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#5B3A9E",
+    backgroundColor: "#3C1A7A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  driverIcon: { fontSize: 16 },
+  driverLbl: { fontSize: 9, color: "#A78BFA", fontWeight: "700" },
 });
 
 // ─── CONFIRM MODAL ────────────────────────────────────────────────────────────
 function ConfirmModal({
   visible,
-  seatNums,
+  seatIds,
   busId,
   agency,
   from,
@@ -177,7 +220,7 @@ function ConfirmModal({
   onClose,
 }: {
   visible: boolean;
-  seatNums: number[];
+  seatIds: string[];
   busId: string;
   agency: string;
   from: string;
@@ -189,11 +232,11 @@ function ConfirmModal({
   busClass: string;
   price: number;
   color: string;
-  onClose: () => void;
+  onClose: (booked?: boolean) => void;
 }) {
   const [step, setStep] = useState<"confirm" | "success">("confirm");
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
-  const bookingRef = `CB-${busId}-${seatNums.join("-")}`;
+  const bookingRef = React.useRef(`CB-${busId}-${Date.now().toString().slice(-6)}`).current;
 
   React.useEffect(() => {
     if (visible) {
@@ -208,7 +251,7 @@ function ConfirmModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={() => onClose()}>
       <View style={cm.overlay}>
         <View style={cm.sheet}>
           <View style={cm.handle} />
@@ -233,7 +276,7 @@ function ConfirmModal({
               {/* Selected seats */}
               <Text style={cm.sectionLabel}>Selected Seats</Text>
               <View style={cm.seatsRow}>
-                {seatNums.map(s => (
+                {seatIds.map(s => (
                   <View key={s} style={[cm.seatBadge, { backgroundColor: color }]}>
                     <Text style={cm.seatBadgeText}>💺 {s}</Text>
                   </View>
@@ -259,19 +302,23 @@ function ConfirmModal({
               <View style={[cm.priceRow, { backgroundColor: color }]}>
                 <View>
                   <Text style={cm.priceLabelTop}>
-                    {seatNums.length} seat{seatNums.length > 1 ? "s" : ""} × {price.toLocaleString()} XAF
+                    {seatIds.length} seat{seatIds.length > 1 ? "s" : ""} × {price.toLocaleString()} XAF
                   </Text>
                   <Text style={cm.priceLabelSub}>Total payable at terminal</Text>
                 </View>
                 <Text style={cm.priceValue}>
-                  {(price * seatNums.length).toLocaleString()} XAF
+                  {(price * seatIds.length).toLocaleString()} XAF
                 </Text>
               </View>
 
-              <TouchableOpacity style={[cm.confirmBtn, { backgroundColor: color }]} onPress={handleConfirm} activeOpacity={0.85}>
+              <TouchableOpacity
+                style={[cm.confirmBtn, { backgroundColor: color }]}
+                onPress={handleConfirm}
+                activeOpacity={0.85}
+              >
                 <Text style={cm.confirmBtnText}>✅  Reserve Seats</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={cm.cancelBtn} onPress={onClose}>
+              <TouchableOpacity style={cm.cancelBtn} onPress={() => onClose()}>
                 <Text style={cm.cancelText}>← Change Selection</Text>
               </TouchableOpacity>
               <View style={{ height: 12 }} />
@@ -289,8 +336,11 @@ function ConfirmModal({
 
               <View style={cm.successCard}>
                 <View style={cm.successSeatsRow}>
-                  {seatNums.map(s => (
-                    <View key={s} style={[cm.successSeatBadge, { backgroundColor: color + "20", borderColor: color + "50" }]}>
+                  {seatIds.map(s => (
+                    <View
+                      key={s}
+                      style={[cm.successSeatBadge, { backgroundColor: color + "20", borderColor: color + "50" }]}
+                    >
                       <Text style={[cm.successSeatText, { color }]}>💺 Seat {s}</Text>
                     </View>
                   ))}
@@ -302,12 +352,15 @@ function ConfirmModal({
                   <Text style={cm.successDetailItem}>⏰ Departs {dep} · Arrives {arr}</Text>
                   <Text style={cm.successDetailItem}>🪪 {plate}</Text>
                   <Text style={[cm.successDetailItem, { color, fontWeight: "800" }]}>
-                    💰 {(price * seatNums.length).toLocaleString()} XAF total
+                    💰 {(price * seatIds.length).toLocaleString()} XAF total
                   </Text>
                 </View>
               </View>
 
-              <TouchableOpacity style={[cm.confirmBtn, { backgroundColor: color }]} onPress={onClose}>
+              <TouchableOpacity
+                style={[cm.confirmBtn, { backgroundColor: color }]}
+                onPress={() => onClose(true)}
+              >
                 <Text style={cm.confirmBtnText}>Done 🚌</Text>
               </TouchableOpacity>
               <View style={{ height: 20 }} />
@@ -322,44 +375,71 @@ function ConfirmModal({
 const cm = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
   sheet: {
-    backgroundColor: "#fff", borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 22, paddingTop: 12,
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 22,
+    paddingTop: 12,
     paddingBottom: Platform.OS === "ios" ? 8 : 4,
     maxHeight: "93%",
   },
-  handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#E5E7EB", alignSelf: "center", marginBottom: 18 },
+  handle: {
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: "#E5E7EB", alignSelf: "center", marginBottom: 18,
+  },
   title: { fontSize: 24, fontWeight: "900", color: TEXT_C, marginBottom: 16, letterSpacing: -0.5 },
 
-  routeBox: { flexDirection: "row", alignItems: "center", borderRadius: 16, padding: 16, marginBottom: 16, borderWidth: 1.5 },
+  routeBox: {
+    flexDirection: "row", alignItems: "center",
+    borderRadius: 16, padding: 16, marginBottom: 16, borderWidth: 1.5,
+  },
   routeCity: { fontSize: 16, fontWeight: "900", color: TEXT_C },
   routeTime: { fontSize: 14, fontWeight: "700", marginTop: 2 },
   routeArrow: { fontSize: 18, fontWeight: "900", marginHorizontal: 8 },
 
-  sectionLabel: { fontSize: 12, fontWeight: "800", color: MUTED, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10 },
+  sectionLabel: {
+    fontSize: 12, fontWeight: "800", color: MUTED,
+    textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10,
+  },
   seatsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
   seatBadge: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 8 },
   seatBadgeText: { color: "#fff", fontWeight: "800", fontSize: 13 },
 
   detailGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 16 },
-  detailItem: { width: "47%", backgroundColor: "#FAFAFA", borderRadius: 12, padding: 12, borderWidth: 1, borderColor: BORDER },
-  detailLabel: { fontSize: 10, color: MUTED, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 4 },
+  detailItem: {
+    width: "47%", backgroundColor: "#FAFAFA",
+    borderRadius: 12, padding: 12, borderWidth: 1, borderColor: BORDER,
+  },
+  detailLabel: {
+    fontSize: 10, color: MUTED, fontWeight: "700",
+    textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 4,
+  },
   detailValue: { fontSize: 13, color: TEXT_C, fontWeight: "700" },
 
-  priceRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 16, padding: 16, marginBottom: 16 },
+  priceRow: {
+    flexDirection: "row", alignItems: "center",
+    justifyContent: "space-between", borderRadius: 16, padding: 16, marginBottom: 16,
+  },
   priceLabelTop: { fontSize: 13, color: "rgba(255,255,255,0.8)", fontWeight: "600" },
   priceLabelSub: { fontSize: 10, color: "rgba(255,255,255,0.6)", fontWeight: "500", marginTop: 2 },
   priceValue: { fontSize: 22, color: "#fff", fontWeight: "900", letterSpacing: -0.5 },
 
   confirmBtn: { borderRadius: 18, paddingVertical: 17, alignItems: "center", marginBottom: 10 },
   confirmBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
-  cancelBtn: { backgroundColor: PURPLE_LIGHT, borderRadius: 16, paddingVertical: 14, alignItems: "center", marginBottom: 4 },
+  cancelBtn: {
+    backgroundColor: PURPLE_LIGHT, borderRadius: 16,
+    paddingVertical: 14, alignItems: "center", marginBottom: 4,
+  },
   cancelText: { color: PURPLE, fontWeight: "700", fontSize: 15 },
 
   successWrap: { alignItems: "center", paddingTop: 10, paddingBottom: 10 },
   successEmoji: { fontSize: 60, marginBottom: 10 },
   successTitle: { fontSize: 28, fontWeight: "900", color: TEXT_C, letterSpacing: -0.8, marginBottom: 8 },
   successRef: { fontSize: 15, fontWeight: "800", marginBottom: 14, letterSpacing: 0.5, textAlign: "center" },
-  successSub: { fontSize: 13, color: MUTED, textAlign: "center", lineHeight: 20, marginBottom: 16, paddingHorizontal: 10 },
+  successSub: {
+    fontSize: 13, color: MUTED, textAlign: "center",
+    lineHeight: 20, marginBottom: 16, paddingHorizontal: 10,
+  },
   successCard: { backgroundColor: "#F5F3FF", borderRadius: 18, padding: 16, width: "100%", marginBottom: 20 },
   successSeatsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 4 },
   successSeatBadge: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1.5 },
@@ -373,54 +453,74 @@ export default function SeatSelectionScreen() {
   const params = useLocalSearchParams<{
     busId: string; agency: string; from: string; to: string;
     date: string; dep: string; arr: string; plate: string;
-    busClass: string; price: string; color: string; totalSeats: string; takenSeats: string;
-    rating: string;
+    busClass: string; price: string; color: string;
+    totalSeats: string; takenSeats: string; rating: string;
   }>();
 
   const {
-    busId = "B001", agency = "Agency", from = "City A", to = "City B",
-    date = "", dep = "08:00", arr = "12:00", plate = "XX-0000-X",
-    busClass = "Standard", price = "3000", color = "#4C1D95",
-    totalSeats = "70", takenSeats = "48", rating = "4.5",
+    busId    = "B001",
+    agency   = "Agency",
+    from     = "City A",
+    to       = "City B",
+    date     = "",
+    dep      = "08:00",
+    arr      = "12:00",
+    plate    = "XX-0000-X",
+    busClass = "Standard",
+    price    = "3000",
+    color    = "#4C1D95",
+    takenSeats = "20",
+    rating   = "4.5",
   } = params;
 
-  const total = parseInt(totalSeats, 10) || 70;
-  const takenCount = parseInt(takenSeats, 10) || 48;
-  const priceNum = parseInt(price, 10) || 3000;
-  const busColor = color.startsWith("%23") ? "#" + color.slice(3) : color;
+  const takenCount = parseInt(takenSeats, 10) || 20;
+  const priceNum   = parseInt(price, 10)    || 3000;
+  const busColor   = color.startsWith("%23") ? "#" + color.slice(3) : color;
 
+  // Build layout once
+  const rows = useMemo(() => buildSeatLayout(), []);
+
+  // Generate taken seat set deterministically from busId
   const takenSet = useMemo(
-    () => generateSeatMap(busId, total, takenCount),
-    [busId, total, takenCount]
+    () => generateSeatMap(busId, takenCount),
+    [busId, takenCount]
   );
 
-  const rows = useMemo(() => buildRows(total), [total]);
+  const [selectedSeats, setSelectedSeats] = useState<Set<string>>(new Set());
+  const [showConfirm, setShowConfirm]     = useState(false);
 
-  const [selectedSeats, setSelectedSeats] = useState<Set<number>>(new Set());
-  const [showConfirm, setShowConfirm] = useState(false);
+  const totalBookable  = ALL_SEAT_IDS.length;                      // 71
+  const availableCount = totalBookable - takenSet.size - selectedSeats.size;
 
-  const availableCount = total - takenCount;
-
-  const toggleSeat = (seatNum: number) => {
+  const toggleSeat = (seatId: string) => {
     setSelectedSeats(prev => {
       const next = new Set(prev);
-      if (next.has(seatNum)) {
-        next.delete(seatNum);
+      if (next.has(seatId)) {
+        next.delete(seatId);
       } else {
         if (next.size >= 5) return prev; // max 5 seats per booking
-        next.add(seatNum);
+        next.add(seatId);
       }
       return next;
     });
   };
 
-  const getSeatStatus = (seatNum: number): "available" | "taken" | "selected" => {
-    if (selectedSeats.has(seatNum)) return "selected";
-    if (takenSet.has(seatNum)) return "taken";
+  const getSeatStatus = (seatId: string): "available" | "taken" | "selected" => {
+    if (selectedSeats.has(seatId)) return "selected";
+    if (takenSet.has(seatId))      return "taken";
     return "available";
   };
 
-  const isBackBenchRow = (row: { seats: (number | null)[] }) => row.seats.length === 5;
+  // Sorted seat IDs for the confirm modal (P → A → B → C order)
+  const selectedSorted = useMemo(() => {
+    const order = (id: string) => {
+      if (id.startsWith("P")) return 0;
+      if (id.startsWith("A")) return 1 + parseInt(id.slice(1), 10);
+      if (id.startsWith("B")) return 100 + parseInt(id.slice(1), 10);
+      return 200 + parseInt(id.slice(1), 10); // C
+    };
+    return Array.from(selectedSeats).sort((a, b) => order(a) - order(b));
+  }, [selectedSeats]);
 
   return (
     <View style={s.root}>
@@ -428,7 +528,7 @@ export default function SeatSelectionScreen() {
 
       <ConfirmModal
         visible={showConfirm}
-        seatNums={Array.from(selectedSeats).sort((a, b) => a - b)}
+        seatIds={selectedSorted}
         busId={busId}
         agency={agency}
         from={from}
@@ -440,13 +540,13 @@ export default function SeatSelectionScreen() {
         busClass={busClass}
         price={priceNum}
         color={busColor}
-       onClose={(booked?: boolean) => {
-       setShowConfirm(false);
-       if (booked) {
-       setSelectedSeats(new Set());
-       router.replace("/(tabs)");
-  }
-}}
+        onClose={(booked?: boolean) => {
+          setShowConfirm(false);
+          if (booked) {
+            setSelectedSeats(new Set());
+            router.replace("/(tabs)");
+          }
+        }}
       />
 
       {/* ── HEADER ── */}
@@ -490,7 +590,7 @@ export default function SeatSelectionScreen() {
           <View style={[s.legendBox, { backgroundColor: "#E5E7EB", borderColor: "#D1D5DB" }]}>
             <Text style={{ fontSize: 7, color: "#9CA3AF", fontWeight: "900" }}>✕</Text>
           </View>
-          <Text style={s.legendText}>Taken ({takenCount})</Text>
+          <Text style={s.legendText}>Taken ({takenSet.size})</Text>
         </View>
         <View style={s.legendItem}>
           <View style={[s.legendBox, { backgroundColor: busColor, borderColor: busColor }]}>
@@ -509,8 +609,8 @@ export default function SeatSelectionScreen() {
         contentContainerStyle={s.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Bus outline */}
         <View style={s.busBody}>
+
           {/* Windscreen / Front */}
           <View style={s.busFront}>
             <View style={s.windscreen}>
@@ -522,88 +622,126 @@ export default function SeatSelectionScreen() {
             </View>
           </View>
 
-          {/* Divider */}
+          {/* Front bench — P1, P2 */}
+          <View style={s.frontBench}>
+            <Text style={s.frontBenchLabel}>Front bench</Text>
+            <View style={s.frontBenchSeats}>
+              {FRONT_BENCH_IDS.map(id => (
+                <SeatButton
+                  key={id}
+                  seatId={id}
+                  status={getSeatStatus(id)}
+                  onPress={() => toggleSeat(id)}
+                  color={busColor}
+                />
+              ))}
+            </View>
+          </View>
+
           <View style={s.divider} />
+
+          {/* Column headers */}
+          <View style={s.colHeaders}>
+            <View style={s.rowNumCol} />
+            <Text style={[s.colLabel, { flex: 3 }]}>Left (A)</Text>
+            <View style={s.aisleGap} />
+            <Text style={[s.colLabel, { flex: 2 }]}>Right (B)</Text>
+          </View>
 
           {/* Seat rows */}
           <View style={s.rowsWrap}>
-            {rows.map((row, ri) => {
-              const isBack = isBackBenchRow(row);
-              return (
-                <View key={ri} style={[s.row, isBack && s.backRow]}>
-                  {/* Row number */}
-                  <Text style={s.rowNum}>{row.rowNum}</Text>
+            {rows.map((row) => (
+              <View key={row.rowNum} style={s.busRow}>
 
-                  {isBack ? (
-                    // Back bench: 5 seats across
-                    <View style={s.backBenchWrap}>
-                      {row.seats.map((seatNum, si) =>
-                        seatNum !== null ? (
-                          <SeatButton
-                            key={si}
-                            seatNum={seatNum}
-                            status={getSeatStatus(seatNum)}
-                            selected={selectedSeats.has(seatNum)}
-                            onPress={() => toggleSeat(seatNum)}
-                            color={busColor}
-                          />
-                        ) : null
-                      )}
-                    </View>
+                {/* Row number */}
+                <Text style={s.rowNum}>{row.rowNum}</Text>
+
+                {/* Left side */}
+                <View style={s.leftGroup}>
+                  {row.isDriverRow ? (
+                    // Row 1 left = driver seat only
+                    <DriverSeat />
                   ) : (
-                    // Normal row: A B | aisle | C D
-                    <View style={s.seatRow}>
+                    row.leftSeats.map(id => (
                       <SeatButton
-                        seatNum={row.seats[0]}
-                        status={row.seats[0] !== null ? getSeatStatus(row.seats[0]) : "available"}
-                        selected={row.seats[0] !== null && selectedSeats.has(row.seats[0])}
-                        onPress={() => row.seats[0] !== null && toggleSeat(row.seats[0])}
+                        key={id}
+                        seatId={id}
+                        status={getSeatStatus(id)}
+                        onPress={() => toggleSeat(id)}
                         color={busColor}
+                        small
                       />
-                      <SeatButton
-                        seatNum={row.seats[1]}
-                        status={row.seats[1] !== null ? getSeatStatus(row.seats[1]) : "available"}
-                        selected={row.seats[1] !== null && selectedSeats.has(row.seats[1])}
-                        onPress={() => row.seats[1] !== null && toggleSeat(row.seats[1])}
-                        color={busColor}
-                      />
-                      {/* Aisle */}
-                      <View style={s.aisle}>
-                        <Text style={s.aisleText}>{row.rowNum}</Text>
-                      </View>
-                      <SeatButton
-                        seatNum={row.seats[3]}
-                        status={row.seats[3] !== null ? getSeatStatus(row.seats[3]) : "available"}
-                        selected={row.seats[3] !== null && selectedSeats.has(row.seats[3])}
-                        onPress={() => row.seats[3] !== null && toggleSeat(row.seats[3])}
-                        color={busColor}
-                      />
-                      <SeatButton
-                        seatNum={row.seats[4]}
-                        status={row.seats[4] !== null ? getSeatStatus(row.seats[4]) : "available"}
-                        selected={row.seats[4] !== null && selectedSeats.has(row.seats[4])}
-                        onPress={() => row.seats[4] !== null && toggleSeat(row.seats[4])}
-                        color={busColor}
-                      />
-                    </View>
+                    ))
                   )}
                 </View>
-              );
-            })}
+
+                {/* Aisle */}
+                <View style={s.aisle}>
+                  <View style={s.aisleLine} />
+                </View>
+
+                {/* Right side */}
+                <View style={s.rightGroup}>
+                  {row.isDoorRow ? (
+                    // Row 2 right = door
+                    <View style={s.doorBox}>
+                      <Text style={s.doorIcon}>🚪</Text>
+                      <Text style={s.doorText}>Door</Text>
+                    </View>
+                  ) : (
+                    row.rightSeats.map(id => (
+                      <SeatButton
+                        key={id}
+                        seatId={id}
+                        status={getSeatStatus(id)}
+                        onPress={() => toggleSeat(id)}
+                        color={busColor}
+                        small
+                      />
+                    ))
+                  )}
+                </View>
+
+              </View>
+            ))}
+          </View>
+
+          {/* Back bench — C1–C7 */}
+          <View style={s.backBench}>
+            <Text style={s.backBenchLabel}>Back bench (C)</Text>
+            <View style={s.backBenchSeats}>
+              {BACK_BENCH_IDS.map(id => (
+                <SeatButton
+                  key={id}
+                  seatId={id}
+                  status={getSeatStatus(id)}
+                  onPress={() => toggleSeat(id)}
+                  color={busColor}
+                  small
+                />
+              ))}
+            </View>
           </View>
 
           {/* Rear */}
           <View style={s.busRear}>
             <Text style={s.busRearText}>🔚  Rear</Text>
           </View>
+
         </View>
 
-        {/* Capacity info */}
+        {/* Capacity bar */}
         <View style={s.capacityBar}>
-          <View style={[s.capacityFill, { width: `${(takenCount / total) * 100}%`, backgroundColor: takenCount / total > 0.8 ? RED : busColor }]} />
+          <View style={[
+            s.capacityFill,
+            {
+              width: `${(takenSet.size / totalBookable) * 100}%`,
+              backgroundColor: takenSet.size / totalBookable > 0.8 ? RED : busColor,
+            },
+          ]} />
         </View>
         <Text style={s.capacityLabel}>
-          {takenCount} of {total} seats occupied · {availableCount} available
+          {takenSet.size} of {totalBookable} seats occupied · {totalBookable - takenSet.size} available
         </Text>
 
         <View style={{ height: 120 }} />
@@ -631,7 +769,9 @@ export default function SeatSelectionScreen() {
           activeOpacity={0.85}
         >
           <Text style={s.bookBtnText}>
-            {selectedSeats.size > 0 ? `Book ${selectedSeats.size} Seat${selectedSeats.size > 1 ? "s" : ""} →` : "Select a Seat"}
+            {selectedSeats.size > 0
+              ? `Book ${selectedSeats.size} Seat${selectedSeats.size > 1 ? "s" : ""} →`
+              : "Select a Seat"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -643,6 +783,7 @@ export default function SeatSelectionScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: BG },
 
+  // Header
   header: {
     paddingTop: Platform.OS === "android" ? 48 : 60,
     paddingHorizontal: 20,
@@ -652,14 +793,25 @@ const s = StyleSheet.create({
     overflow: "hidden",
     position: "relative",
   },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center" },
+  backBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center", justifyContent: "center",
+  },
   backArrow: { fontSize: 20, color: "#fff", fontWeight: "900" },
   headerCenter: { flex: 1, alignItems: "center" },
   headerTitle: { fontSize: 18, fontWeight: "900", color: "#fff", letterSpacing: -0.4 },
   headerSub: { fontSize: 11, color: "#C4B5FD", fontWeight: "500", marginTop: 2 },
-  hCircle1: { position: "absolute", width: 160, height: 160, borderRadius: 80, backgroundColor: "#7C3AED", opacity: 0.2, right: -40, bottom: -60 },
-  hCircle2: { position: "absolute", width: 90, height: 90, borderRadius: 45, backgroundColor: "#A78BFA", opacity: 0.12, right: 60, bottom: -20 },
+  hCircle1: {
+    position: "absolute", width: 160, height: 160, borderRadius: 80,
+    backgroundColor: "#7C3AED", opacity: 0.2, right: -40, bottom: -60,
+  },
+  hCircle2: {
+    position: "absolute", width: 90, height: 90, borderRadius: 45,
+    backgroundColor: "#A78BFA", opacity: 0.12, right: 60, bottom: -20,
+  },
 
+  // Trip strip
   tripStrip: {
     flexDirection: "row", alignItems: "center",
     marginHorizontal: 16, marginTop: 12, marginBottom: 6,
@@ -671,9 +823,10 @@ const s = StyleSheet.create({
   tripMid: { flex: 1.2, alignItems: "center", gap: 2 },
   tripArrow: { fontSize: 16, fontWeight: "900" },
 
+  // Legend
   legend: {
     flexDirection: "row", alignItems: "center",
-    paddingHorizontal: 16, marginBottom: 10, gap: 14, flexWrap: "wrap",
+    paddingHorizontal: 16, marginBottom: 8, gap: 14, flexWrap: "wrap",
   },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
   legendBox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, alignItems: "center", justifyContent: "center" },
@@ -681,81 +834,106 @@ const s = StyleSheet.create({
   ratingText: { fontSize: 12, fontWeight: "700", color: GOLD },
 
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 16, paddingTop: 4 },
+  scrollContent: { paddingHorizontal: 12, paddingTop: 4 },
 
+  // Bus shell
   busBody: {
     backgroundColor: CARD,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: BORDER,
+    borderRadius: 24, borderWidth: 2, borderColor: BORDER,
     overflow: "hidden",
     shadowColor: PURPLE_DARK,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 6,
+    shadowOpacity: 0.1, shadowRadius: 16, elevation: 6,
   },
 
   busFront: {
     backgroundColor: PURPLE_DARK,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    paddingVertical: 14, paddingHorizontal: 20,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
   },
   windscreen: {
-    flex: 1,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    borderRadius: 12,
-    padding: 10,
-    alignItems: "center",
-    marginRight: 12,
+    flex: 1, backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 12, padding: 10, alignItems: "center", marginRight: 12,
   },
   windscreenText: { color: "#fff", fontWeight: "800", fontSize: 13 },
   driverArea: { alignItems: "center" },
   driverIcon: { fontSize: 28 },
   driverLabel: { fontSize: 10, color: "#C4B5FD", fontWeight: "700", marginTop: 2 },
 
-  divider: { height: 3, backgroundColor: BORDER },
-
-  rowsWrap: { paddingVertical: 12, paddingHorizontal: 10, gap: 8 },
-
-  row: { flexDirection: "row", alignItems: "center", gap: 6 },
-  backRow: { justifyContent: "center", marginTop: 4 },
-
-  rowNum: { fontSize: 10, color: MUTED, fontWeight: "800", width: 18, textAlign: "center" },
-
-  seatRow: { flexDirection: "row", alignItems: "center", gap: 8, flex: 1 },
-
-  aisle: {
-    width: 28,
-    alignItems: "center",
-    justifyContent: "center",
+  // Front bench
+  frontBench: {
+    backgroundColor: "#3C1A7A",
+    paddingVertical: 8, paddingHorizontal: 14,
+    flexDirection: "row", alignItems: "center", gap: 10,
   },
-  aisleText: { fontSize: 9, color: "#D1D5DB", fontWeight: "700" },
+  frontBenchLabel: { fontSize: 10, color: "#A78BFA", fontWeight: "600", flex: 1 },
+  frontBenchSeats: { flexDirection: "row", gap: 8 },
 
-  backBenchWrap: { flexDirection: "row", gap: 8, justifyContent: "center", flex: 1 },
+  divider: { height: 2, backgroundColor: BORDER },
+
+  // Column headers
+  colHeaders: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 10, paddingTop: 6, paddingBottom: 2,
+  },
+  rowNumCol: { width: 22 },
+  colLabel: {
+    fontSize: 10, fontWeight: "700", color: MUTED,
+    textAlign: "center", letterSpacing: 0.4,
+  },
+  aisleGap: { width: 28 },
+
+  // Rows
+  rowsWrap: { paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
+  busRow: { flexDirection: "row", alignItems: "center" },
+
+  rowNum: { fontSize: 9, color: MUTED, fontWeight: "800", width: 22, textAlign: "center" },
+
+  leftGroup: { flex: 3, flexDirection: "row", gap: 5, justifyContent: "center" },
+  rightGroup: { flex: 2, flexDirection: "row", gap: 5, justifyContent: "flex-start", paddingLeft: 4 },
+
+  aisle: { width: 28, alignItems: "center", justifyContent: "center" },
+  aisleLine: { width: 2, height: 30, backgroundColor: BORDER, borderRadius: 1 },
+
+  // Door
+  doorBox: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    borderWidth: 1.5, borderColor: "#CA8A04", borderStyle: "dashed",
+    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6,
+    backgroundColor: "#FEF3C7",
+  },
+  doorIcon: { fontSize: 14 },
+  doorText: { fontSize: 10, fontWeight: "700", color: "#92400E" },
+
+  // Back bench
+  backBench: {
+    backgroundColor: BG,
+    borderTopWidth: 2, borderTopColor: BORDER,
+    paddingVertical: 10, paddingHorizontal: 14,
+    alignItems: "center", gap: 6,
+  },
+  backBenchLabel: { fontSize: 10, color: MUTED, fontWeight: "700", letterSpacing: 0.4 },
+  backBenchSeats: { flexDirection: "row", gap: 6, flexWrap: "wrap", justifyContent: "center" },
 
   busRear: {
     backgroundColor: "#F3F4F6",
-    paddingVertical: 10,
-    alignItems: "center",
-    borderTopWidth: 2,
-    borderTopColor: BORDER,
+    paddingVertical: 10, alignItems: "center",
+    borderTopWidth: 2, borderTopColor: BORDER,
   },
   busRearText: { fontSize: 12, color: MUTED, fontWeight: "700" },
 
+  // Capacity
   capacityBar: {
-    height: 6,
-    backgroundColor: "#E5E7EB",
-    borderRadius: 3,
-    marginTop: 14,
-    overflow: "hidden",
+    height: 6, backgroundColor: "#E5E7EB",
+    borderRadius: 3, marginTop: 14, overflow: "hidden",
   },
   capacityFill: { height: 6, borderRadius: 3 },
-  capacityLabel: { fontSize: 11, color: MUTED, fontWeight: "600", textAlign: "center", marginTop: 6, marginBottom: 4 },
+  capacityLabel: {
+    fontSize: 11, color: MUTED, fontWeight: "600",
+    textAlign: "center", marginTop: 6, marginBottom: 4,
+  },
 
+  // Bottom bar
   bottomBar: {
     position: "absolute",
     bottom: 0, left: 0, right: 0,
@@ -763,16 +941,11 @@ const s = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: Platform.OS === "ios" ? 36 : 20,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    borderTopWidth: 1.5,
-    borderTopColor: BORDER,
+    flexDirection: "row", alignItems: "center", gap: 14,
+    borderTopWidth: 1.5, borderTopColor: BORDER,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOpacity: 0.08, shadowRadius: 16, elevation: 12,
   },
   bottomInfo: { flex: 1 },
   bottomHint: { fontSize: 14, color: MUTED, fontWeight: "600" },
