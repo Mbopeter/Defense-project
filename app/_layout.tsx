@@ -9,6 +9,8 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="search-results" options={{ headerShown: false, animation: "slide_from_right" }} />
         <Stack.Screen name="agency-profile" options={{ headerShown: false, animation: "slide_from_right" }} />
+        <Stack.Screen name="payment" options={{ headerShown: false, animation: "slide_from_right" }} />
+        <Stack.Screen name="ticket-form" options={{ headerShown: false, animation: "slide_from_right" }} />
       </Stack>
     </LanguageProvider>
   );

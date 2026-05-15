@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   Animated,
   Modal,
@@ -171,6 +171,7 @@ function ConfirmModal({
   price,
   color,
   onClose,
+  onNavigateToPayment,
 }: {
   visible: boolean;
   seatIds: string[];
@@ -186,6 +187,7 @@ function ConfirmModal({
   price: number;
   color: string;
   onClose: (booked?: boolean) => void;
+  onNavigateToPayment: (bookingRef: string) => void;
 }) {
   const [step, setStep] = useState<"confirm" | "success">("confirm");
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
@@ -199,8 +201,9 @@ function ConfirmModal({
   }, [visible]);
 
   const handleConfirm = () => {
-    setStep("success");
-    Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+    // Close modal and navigate to payment
+    onClose(true);
+    onNavigateToPayment(bookingRef);
   };
 
   return (
@@ -265,7 +268,7 @@ function ConfirmModal({
               </View>
 
               <TouchableOpacity style={[cm.confirmBtn, { backgroundColor: color }]} onPress={handleConfirm} activeOpacity={0.85}>
-                <Text style={cm.confirmBtnText}>✅  Reserve Seats</Text>
+                <Text style={cm.confirmBtnText}>💳  Proceed to Payment</Text>
               </TouchableOpacity>
               <TouchableOpacity style={cm.cancelBtn} onPress={onClose}>
                 <Text style={cm.cancelText}>← Change Selection</Text>
@@ -280,33 +283,8 @@ function ConfirmModal({
               <Text style={cm.successTitle}>Seats Reserved!</Text>
               <Text style={[cm.successRef, { color }]}>{bookingRef}</Text>
               <Text style={cm.successSub}>
-                Show this reference at the {agency} terminal at least 20 min before {dep}.
+                Redirecting you to payment…
               </Text>
-
-              <View style={cm.successCard}>
-                <View style={cm.successSeatsRow}>
-                  {seatIds.map(s => (
-                    <View key={s} style={[cm.successSeatBadge, { backgroundColor: color + "20", borderColor: color + "50" }]}>
-                      <Text style={[cm.successSeatText, { color }]}>💺 Seat {s}</Text>
-                    </View>
-                  ))}
-                </View>
-                <View style={{ gap: 8, marginTop: 10 }}>
-                  <Text style={cm.successDetailItem}>🚌 {agency} — {busClass}</Text>
-                  <Text style={cm.successDetailItem}>🛣️ {from} → {to}</Text>
-                  <Text style={cm.successDetailItem}>📅 {date || "Date not set"}</Text>
-                  <Text style={cm.successDetailItem}>⏰ Departs {dep} · Arrives {arr}</Text>
-                  <Text style={cm.successDetailItem}>🪪 {plate}</Text>
-                  <Text style={[cm.successDetailItem, { color, fontWeight: "800" }]}>
-                    💰 {(price * seatIds.length).toLocaleString()} XAF total
-                  </Text>
-                </View>
-              </View>
-
-              <TouchableOpacity style={[cm.confirmBtn, { backgroundColor: color }]} onPress={onClose}>
-                <Text style={cm.confirmBtnText}>Done 🚌</Text>
-              </TouchableOpacity>
-              <View style={{ height: 20 }} />
             </Animated.View>
           )}
         </View>
@@ -451,10 +429,20 @@ export default function SeatSelectionScreen() {
         color={busColor}
         onClose={(booked?: boolean) => {
           setShowConfirm(false);
-          if (booked) {
-            setSelectedSeats(new Set());
-            router.replace("/(tabs)");
+          if (!booked) {
+            // user pressed Change Selection — stay on screen
           }
+        }}
+        onNavigateToPayment={(bookingRef: string) => {
+          setShowConfirm(false);
+          router.push({
+            pathname: "/payment",
+            params: {
+              agency, from, to, date, dep, arr, plate, busClass,
+              price, seats: selectedSorted.join(","),
+              color: busColor, bookingRef, busId,
+            },
+          });
         }}
       />
 
