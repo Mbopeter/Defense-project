@@ -85,16 +85,86 @@ const ALL_BUSES = [
 type SortKey = "price" | "time" | "seats" | "rating";
 type FilterClass = "All" | "VIP" | "Comfort" | "Standard" | "Budget";
 
+// Departure times spread across the day; last slot is always 19:00
+const GUARANTEED_DEPARTURE_TIMES = ["06:00", "07:00", "08:00", "10:00", "12:00", "14:00", "19:00"];
+
+// Agencies and classes used when generating filler buses
+const FILLER_AGENCIES = [
+  { agency: "United Express",      color: "#0891B2", emoji: "🩵", amenities: ["AC","WiFi","USB"], class: "VIP",      rating: 4.7 },
+  { agency: "Général Express",     color: "#1D4ED8", emoji: "🏆", amenities: ["AC"],              class: "Standard", rating: 4.8 },
+  { agency: "Vatican Express",     color: "#475569", emoji: "⚪", amenities: ["AC","USB"],         class: "Comfort",  rating: 4.5 },
+  { agency: "Garanti Express",     color: "#DC2626", emoji: "🔴", amenities: [],                  class: "Standard", rating: 4.3 },
+  { agency: "Touristique Express", color: "#16A34A", emoji: "🟢", amenities: ["AC","WiFi","Snack","USB"], class: "VIP", rating: 4.7 },
+  { agency: "Buca Voyage",         color: "#CA8A04", emoji: "🟡", amenities: ["AC","USB"],         class: "VIP",      rating: 4.6 },
+  { agency: "Amour Mezam",         color: "#9333EA", emoji: "💜", amenities: ["AC","WiFi","USB","Snack"], class: "VIP", rating: 4.6 },
+];
+
+// Arrival offset in hours for common corridors (fallback: 3h)
+const ROUTE_DURATION: Record<string, number> = {
+  "yaoundé-douala": 3.5, "douala-yaoundé": 3.5,
+  "yaoundé-bamenda": 6,  "bamenda-yaoundé": 6,
+  "douala-bafoussam": 4, "bafoussam-douala": 4,
+  "yaoundé-ngaoundéré": 9, "ngaoundéré-yaoundé": 9,
+  "bamenda-douala": 6,   "douala-bamenda": 6,
+  "douala-limbé": 1.5,   "limbé-douala": 1.5,
+};
+
+function addHours(time: string, hours: number): string {
+  const [h, m] = time.split(":").map(Number);
+  const total = h * 60 + m + Math.round(hours * 60);
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
 function getAvailableBuses(from: string, to: string, time: string) {
-  return ALL_BUSES.filter(b => {
+  const routeKey = `${from.toLowerCase()}-${to.toLowerCase()}`;
+  const durationH = ROUTE_DURATION[routeKey] ?? 3;
+
+  // 1. Get real buses that match the route
+  const real = ALL_BUSES.filter(b => {
     const fromMatch = b.from.toLowerCase() === from.toLowerCase();
     const toMatch   = b.to.toLowerCase()   === to.toLowerCase();
-    // time filter: if specific time given match dep hour, otherwise show all
-   const noTimeFilter = !time || time === "—";
-  const isFixedTime = time === "08:00" || time === "19:00";
-  const timeMatch = noTimeFilter || !isFixedTime || b.dep === time;// custom time → show all
+    const noFilter  = !time || time === "—";
+    const isFixed   = time === "08:00" || time === "19:00";
+    const timeMatch = noFilter || !isFixed || b.dep === time;
     return fromMatch && toMatch && timeMatch;
   });
+
+  // If time filter is active, just return what matches (no padding needed)
+  if (time && time !== "—") return real;
+
+  // 2. Find which departure slots are already covered by real buses
+  const coveredDeps = new Set(real.map(b => b.dep));
+
+  // 3. Deterministic seed from route so filler buses are consistent per route
+  const seed = routeKey.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+
+  // 4. Build filler buses for uncovered slots to guarantee 7 total
+  const filler: typeof ALL_BUSES = [];
+  let fillerIdx = 0;
+
+  for (const dep of GUARANTEED_DEPARTURE_TIMES) {
+    if (coveredDeps.has(dep)) continue;
+    if (real.length + filler.length >= 7) break;
+
+    const agencyIdx = (seed + fillerIdx * 3) % FILLER_AGENCIES.length;
+    const ag = FILLER_AGENCIES[agencyIdx];
+    const seatsAvail = 5 + ((seed + fillerIdx * 7) % 30); // 5–34 seats
+
+    filler.push({
+      id: `GEN-${routeKey.replace(/[^a-z]/g, "")}-${dep.replace(":", "")}`,
+      from, to,
+      dep,
+      arr: addHours(dep, durationH),
+      price: 2500 + ((seed + fillerIdx * 17) % 8) * 500, // 2500–6000 XAF range
+      seats: seatsAvail,
+      total: seatsAvail + 10 + ((seed + fillerIdx * 5) % 20),
+      plate: `GN-${String((seed + fillerIdx * 13) % 9999).padStart(4, "0")}-X`,
+      ...ag,
+    });
+    fillerIdx++;
+  }
+
+  return [...real, ...filler];
 }
 
 // ─── SEAT AVAILABILITY BAR ────────────────────────────────────────────────────
@@ -262,9 +332,7 @@ function BookingModal({ bus, from, to, date, onClose }: {
 
   if (!bus) return null;
 
-  const bookingRef = React.useRef(
-  `CB-${Date.now().toString().slice(-6)}`
- ).current;
+  const bookingRef = `CB-${Date.now().toString().slice(-6)}`;
 
   return (
     <Modal visible={!!bus} animationType="slide" transparent onRequestClose={onClose}>
