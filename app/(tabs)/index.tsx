@@ -353,10 +353,53 @@ function CityPickerModal({ visible, onClose, onSelect, type, t }: any) {
 }
 
 // ─── TIME PICKER MODAL ────────────────────────────────────────────────────────
-function TimePickerModal({ visible, onClose, onSelect, t }: any) {
+// Returns true if a given "HH:MM" is in the past for today (or before 08:00)
+function isTimePastOrTooEarly(timeStr: string, selectedDate: string): boolean {
+  const [h, m] = timeStr.split(":").map(Number);
+  // Always block times before 08:00
+  if (h < 8) return true;
+  // If a date is selected, check whether it's today
+  if (selectedDate) {
+    const [dd, mm, yyyy] = selectedDate.split("/").map(Number);
+    const now = new Date();
+    const selDate = new Date(yyyy, mm - 1, dd);
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (selDate.getTime() === todayMidnight.getTime()) {
+      const nowMins = now.getHours() * 60 + now.getMinutes();
+      const slotMins = h * 60 + m;
+      if (slotMins <= nowMins) return true;
+    }
+  } else {
+    // No date chosen — treat as today
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    const slotMins = h * 60 + m;
+    if (slotMins <= nowMins) return true;
+  }
+  return false;
+}
+
+function TimePickerModal({ visible, onClose, onSelect, t, selectedDate }: any) {
   const [hour, setHour] = useState(8);
   const [min, setMin] = useState(0);
   const fmt = (n: number) => String(n).padStart(2, "0");
+
+  // Clamp hour up to 8 minimum; also clamp up when the current time passes
+  const incrementHour = () => {
+    setHour(h => {
+      const next = (h + 1) % 24;
+      return next < 8 ? 8 : next;
+    });
+  };
+  const decrementHour = () => {
+    setHour(h => {
+      const next = h - 1;
+      return next < 8 ? 23 : next; // wrap around 23 → 8 minimum
+    });
+  };
+
+  const currentTimeStr = `${fmt(hour)}:${fmt(min)}`;
+  const selectedIsPast = isTimePastOrTooEarly(currentTimeStr, selectedDate ?? "");
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -364,15 +407,23 @@ function TimePickerModal({ visible, onClose, onSelect, t }: any) {
         <View style={tp.sheet}>
           <View style={tp.handle} />
           <Text style={tp.title}>🕐 {t.pickTime}</Text>
+
+          {/* Info banner when date is today */}
+          <View style={{ backgroundColor: "#EDE9FE", borderRadius: 12, padding: 10, marginBottom: 14, borderWidth: 1, borderColor: "#DDD6FE" }}>
+            <Text style={{ fontSize: 12, color: "#4C1D95", fontWeight: "600", textAlign: "center" }}>
+              ⚠️ Departures before 08:00 are not available. Past times are disabled for today.
+            </Text>
+          </View>
+
           <View style={tp.pickerRow}>
             <View style={tp.col}>
-              <TouchableOpacity onPress={() => setHour(h => (h + 1) % 24)} style={tp.arrow}>
+              <TouchableOpacity onPress={incrementHour} style={tp.arrow}>
                 <Text style={tp.arrowText}>▲</Text>
               </TouchableOpacity>
               <View style={tp.numBox}>
                 <Text style={tp.numText}>{fmt(hour)}</Text>
               </View>
-              <TouchableOpacity onPress={() => setHour(h => (h - 1 + 24) % 24)} style={tp.arrow}>
+              <TouchableOpacity onPress={decrementHour} style={tp.arrow}>
                 <Text style={tp.arrowText}>▼</Text>
               </TouchableOpacity>
             </View>
@@ -389,23 +440,42 @@ function TimePickerModal({ visible, onClose, onSelect, t }: any) {
               </TouchableOpacity>
             </View>
           </View>
+
           <View style={tp.quickRow}>
-            {["06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00"].map(t2 => (
-              <TouchableOpacity
-                key={t2}
-                style={tp.quickBtn}
-                onPress={() => { const [h, m] = t2.split(":").map(Number); setHour(h); setMin(m); }}
-              >
-                <Text style={tp.quickBtnText}>{t2}</Text>
-              </TouchableOpacity>
-            ))}
+            {["08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00"].map(t2 => {
+              const isPast = isTimePastOrTooEarly(t2, selectedDate ?? "");
+              return (
+                <TouchableOpacity
+                  key={t2}
+                  style={[tp.quickBtn, isPast && { backgroundColor: "#F3F4F6", opacity: 0.5 }]}
+                  onPress={() => {
+                    if (isPast) return;
+                    const [h, m] = t2.split(":").map(Number);
+                    setHour(h);
+                    setMin(m);
+                  }}
+                  disabled={isPast}
+                >
+                  <Text style={[tp.quickBtnText, isPast && { color: "#9CA3AF" }]}>{t2}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
-          <TouchableOpacity
-            style={tp.confirmBtn}
-            onPress={() => { onSelect(`${fmt(hour)}:${fmt(min)}`); onClose(); }}
-          >
-            <Text style={tp.confirmText}>Confirm {fmt(hour)}:{fmt(min)}</Text>
-          </TouchableOpacity>
+
+          {selectedIsPast ? (
+            <View style={{ backgroundColor: "#FEF2F2", borderRadius: 16, paddingVertical: 16, alignItems: "center", marginBottom: 10 }}>
+              <Text style={{ color: "#DC2626", fontWeight: "800", fontSize: 14 }}>
+                ⛔ This time has already passed — please pick a future time
+              </Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={tp.confirmBtn}
+              onPress={() => { onSelect(`${fmt(hour)}:${fmt(min)}`); onClose(); }}
+            >
+              <Text style={tp.confirmText}>Confirm {fmt(hour)}:{fmt(min)}</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={tp.cancelBtn} onPress={onClose}>
             <Text style={tp.cancelText}>{t.cancel}</Text>
           </TouchableOpacity>
@@ -416,9 +486,9 @@ function TimePickerModal({ visible, onClose, onSelect, t }: any) {
 }
 
 // ─── AGENCY CARD ─────────────────────────────────────────────────────────────
-function AgencyCard({ item }: { item: typeof AGENCIES[0] }) {
+function AgencyCard({ item, onPress }: { item: typeof AGENCIES[0]; onPress: () => void }) {
   return (
-    <TouchableOpacity style={ag.card} activeOpacity={0.8}>
+    <TouchableOpacity style={ag.card} activeOpacity={0.8} onPress={onPress}>
       <View style={[ag.accent, { backgroundColor: item.color }]} />
 
       <View style={[ag.iconWrap, { backgroundColor: item.color + "18" }]}>
@@ -495,6 +565,23 @@ export default function HomeScreen() {
   const isShort = routeHours !== null && routeHours < 6;
   const citiesChosen = !!from && !!to;
 
+  // Check if a fixed departure slot is in the past for the selected date (or today if no date)
+  const isFixedTimePast = (slotTime: string): boolean => {
+    const [h, m] = slotTime.split(":").map(Number);
+    let checkToday = true;
+    if (date) {
+      const [dd, mm, yyyy] = date.split("/").map(Number);
+      const now = new Date();
+      const selDate = new Date(yyyy, mm - 1, dd);
+      const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (selDate.getTime() !== todayMidnight.getTime()) checkToday = false;
+    }
+    if (!checkToday) return false;
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    return (h * 60 + m) <= nowMins;
+  };
+
   const handleSearch = () => {
     if (!from || !to) {
       setSearchError("Please choose both departure and destination cities.");
@@ -504,11 +591,16 @@ export default function HomeScreen() {
       setSearchError("Departure and destination cannot be the same city.");
       return;
     }
+    // Check if selected time is in the past for today
+    const chosenTime = isLong ? (fixedTime ?? "") : (customTime ?? "");
+    if (chosenTime && isFixedTimePast(chosenTime)) {
+      setSearchError(`The ${chosenTime} departure has already passed for today. Please choose a later time or a future date.`);
+      return;
+    }
     setSearchError("");
-    const time = isLong ? (fixedTime ?? "") : (customTime ?? "");
     router.push({
       pathname: "/search-results",
-      params: { from, to, date, time },
+      params: { from, to, date, time: chosenTime },
     });
   };
 
@@ -531,7 +623,7 @@ export default function HomeScreen() {
         t={t}
       />
       <CalendarModal visible={showCal} onClose={() => setShowCal(false)} onSelect={setDate} t={t} />
-      <TimePickerModal visible={showTime} onClose={() => setShowTime(false)} onSelect={setCustomTime} t={t} />
+      <TimePickerModal visible={showTime} onClose={() => setShowTime(false)} onSelect={setCustomTime} t={t} selectedDate={date} />
 
       <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
 
@@ -623,18 +715,24 @@ export default function HomeScreen() {
               {[
                 { k: "08:00" as const, l: t.dayTravel,   d: t.dayDesc   },
                 { k: "19:00" as const, l: t.nightTravel, d: t.nightDesc },
-              ].map(opt => (
-                <TouchableOpacity
-                  key={opt.k}
-                  style={[s.timeCard, fixedTime === opt.k && s.timeCardOn]}
-                  onPress={() => setFixedTime(opt.k)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={s.timeCardLabel}>{opt.l}</Text>
-                  <Text style={[s.timeCardTime, fixedTime === opt.k && { color: "#fff" }]}>{opt.k}</Text>
-                  <Text style={[s.timeCardDesc, fixedTime === opt.k && { color: "#DDD6FE" }]}>{opt.d}</Text>
-                </TouchableOpacity>
-              ))}
+              ].map(opt => {
+                const past = isFixedTimePast(opt.k);
+                return (
+                  <TouchableOpacity
+                    key={opt.k}
+                    style={[s.timeCard, fixedTime === opt.k && !past && s.timeCardOn, past && { opacity: 0.4, backgroundColor: "#F3F4F6" }]}
+                    onPress={() => { if (!past) setFixedTime(opt.k); }}
+                    activeOpacity={past ? 1 : 0.8}
+                    disabled={past}
+                  >
+                    <Text style={s.timeCardLabel}>{past ? "⛔ " : ""}{opt.l}</Text>
+                    <Text style={[s.timeCardTime, fixedTime === opt.k && !past && { color: "#fff" }, past && { color: "#9CA3AF" }]}>{opt.k}</Text>
+                    <Text style={[s.timeCardDesc, fixedTime === opt.k && !past && { color: "#DDD6FE" }, past && { color: "#9CA3AF" }]}>
+                      {past ? "Already departed today" : opt.d}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           )}
 
@@ -650,18 +748,24 @@ export default function HomeScreen() {
                 {[
                   { k: "08:00" as const, l: t.dayTravel,   d: t.dayDesc   },
                   { k: "19:00" as const, l: t.nightTravel, d: t.nightDesc },
-                ].map(opt => (
-                  <TouchableOpacity
-                    key={opt.k}
-                    style={[s.timeCard, fixedTime === opt.k && s.timeCardOn]}
-                    onPress={() => { setFixedTime(opt.k); setCustomTime(null); }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={s.timeCardLabel}>{opt.l}</Text>
-                    <Text style={[s.timeCardTime, fixedTime === opt.k && { color: "#fff" }]}>{opt.k}</Text>
-                    <Text style={[s.timeCardDesc, fixedTime === opt.k && { color: "#DDD6FE" }]}>{opt.d}</Text>
-                  </TouchableOpacity>
-                ))}
+                ].map(opt => {
+                  const past = isFixedTimePast(opt.k);
+                  return (
+                    <TouchableOpacity
+                      key={opt.k}
+                      style={[s.timeCard, fixedTime === opt.k && !past && s.timeCardOn, past && { opacity: 0.4, backgroundColor: "#F3F4F6" }]}
+                      onPress={() => { if (!past) { setFixedTime(opt.k); setCustomTime(null); } }}
+                      activeOpacity={past ? 1 : 0.8}
+                      disabled={past}
+                    >
+                      <Text style={s.timeCardLabel}>{past ? "⛔ " : ""}{opt.l}</Text>
+                      <Text style={[s.timeCardTime, fixedTime === opt.k && !past && { color: "#fff" }, past && { color: "#9CA3AF" }]}>{opt.k}</Text>
+                      <Text style={[s.timeCardDesc, fixedTime === opt.k && !past && { color: "#DDD6FE" }, past && { color: "#9CA3AF" }]}>
+                        {past ? "Already departed today" : opt.d}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             </>
           )}
@@ -692,15 +796,7 @@ export default function HomeScreen() {
           )}
 
           {/* SEARCH BUTTON */}
-          <TouchableOpacity style={s.searchBtn} onPress={() => {
-  if (!from || !to) {
-    setSearchError("Please choose departure and destination.");
-    return;
-  }
-  setSearchError("");
-  const time = isLong ? (fixedTime ?? "") : (customTime ?? "");
-  router.push({ pathname: "/search-results", params: { from, to, date, time } });
-}} activeOpacity={0.85}>
+          <TouchableOpacity style={s.searchBtn} onPress={handleSearch} activeOpacity={0.85}>
             <Text style={s.searchBtnText}>🔍  {t.searchBuses}</Text>
           </TouchableOpacity>
         </View>
@@ -729,7 +825,11 @@ export default function HomeScreen() {
           <Text style={s.sectionSub}>{t.scrollAgencies}</Text>
 
           {AGENCIES.filter(a => !a.cross).map((a, i) => (
-            <AgencyCard key={i} item={a} />
+            <AgencyCard
+              key={i}
+              item={a}
+              onPress={() => router.push({ pathname: "/agency-profile", params: { name: encodeURIComponent(a.name) } })}
+            />
           ))}
 
           <View style={s.intlSep}>
@@ -739,7 +839,11 @@ export default function HomeScreen() {
           </View>
 
           {AGENCIES.filter(a => a.cross).map((a, i) => (
-            <AgencyCard key={i} item={a} />
+            <AgencyCard
+              key={i}
+              item={a}
+              onPress={() => router.push({ pathname: "/agency-profile", params: { name: encodeURIComponent(a.name) } })}
+            />
           ))}
         </View>
 

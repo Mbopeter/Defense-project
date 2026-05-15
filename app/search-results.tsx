@@ -115,47 +115,101 @@ function addHours(time: string, hours: number): string {
   return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
-function getAvailableBuses(from: string, to: string, time: string) {
+// ─── TIME HELPERS ─────────────────────────────────────────────────────────────
+function isDateToday(dateStr: string): boolean {
+  if (!dateStr) return true; // no date = assume today
+  const [dd, mm, yyyy] = dateStr.split("/").map(Number);
+  const now = new Date();
+  return (
+    dd === now.getDate() &&
+    mm === now.getMonth() + 1 &&
+    yyyy === now.getFullYear()
+  );
+}
+
+function isDepPast(depTime: string, dateStr: string): boolean {
+  if (!isDateToday(dateStr)) return false;
+  const [h, m] = depTime.split(":").map(Number);
+  const now = new Date();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  return (h * 60 + m) <= nowMins;
+}
+
+function getAvailableBuses(from: string, to: string, time: string, date: string) {
   const routeKey = `${from.toLowerCase()}-${to.toLowerCase()}`;
   const durationH = ROUTE_DURATION[routeKey] ?? 3;
+  const todayCheck = isDateToday(date);
+
+  // Compute which departure slots are still valid (not in the past for today)
+  const validSlots = GUARANTEED_DEPARTURE_TIMES.filter(dep => {
+    // Always block before 08:00 (shouldn't be in GUARANTEED list but safety check)
+    const [h] = dep.split(":").map(Number);
+    if (h < 8) return false;
+    if (todayCheck && isDepPast(dep, date)) return false;
+    return true;
+  });
 
   // 1. Get real buses that match the route
   const real = ALL_BUSES.filter(b => {
     const fromMatch = b.from.toLowerCase() === from.toLowerCase();
     const toMatch   = b.to.toLowerCase()   === to.toLowerCase();
+    if (!fromMatch || !toMatch) return false;
+
+    // For today: filter out buses that have already departed
+    if (todayCheck && isDepPast(b.dep, date)) return false;
+
     const noFilter  = !time || time === "—";
     const isFixed   = time === "08:00" || time === "19:00";
     const timeMatch = noFilter || !isFixed || b.dep === time;
-    return fromMatch && toMatch && timeMatch;
+    return timeMatch;
   });
 
-  // If time filter is active, just return what matches (no padding needed)
-  if (time && time !== "—") return real;
+  // If a specific time filter is active, just return matching real buses (no padding)
+  if (time && time !== "—") {
+    // If none found for this exact time, generate a filler for it
+    if (real.length === 0) {
+      const seed = routeKey.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+      const ag = FILLER_AGENCIES[seed % FILLER_AGENCIES.length];
+      const seatsAvail = 8 + (seed % 20);
+      return [{
+        id: `GEN-${routeKey.replace(/[^a-z]/g, "")}-${time.replace(":", "")}`,
+        from, to,
+        dep: time,
+        arr: addHours(time, durationH),
+        price: 3000 + (seed % 6) * 500,
+        seats: seatsAvail,
+        total: seatsAvail + 15,
+        plate: `GN-${String(seed % 9999).padStart(4, "0")}-X`,
+        ...ag,
+      }];
+    }
+    return real;
+  }
 
-  // 2. Find which departure slots are already covered by real buses
+  // 2. Find which valid departure slots are already covered by real buses
   const coveredDeps = new Set(real.map(b => b.dep));
 
   // 3. Deterministic seed from route so filler buses are consistent per route
   const seed = routeKey.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
 
-  // 4. Build filler buses for uncovered slots to guarantee 7 total
+  // 4. Build filler buses for uncovered VALID slots to guarantee coverage
   const filler: typeof ALL_BUSES = [];
   let fillerIdx = 0;
 
-  for (const dep of GUARANTEED_DEPARTURE_TIMES) {
+  for (const dep of validSlots) {
     if (coveredDeps.has(dep)) continue;
-    if (real.length + filler.length >= 7) break;
+    if (real.length + filler.length >= Math.max(7, validSlots.length)) break;
 
     const agencyIdx = (seed + fillerIdx * 3) % FILLER_AGENCIES.length;
     const ag = FILLER_AGENCIES[agencyIdx];
-    const seatsAvail = 5 + ((seed + fillerIdx * 7) % 30); // 5–34 seats
+    const seatsAvail = 5 + ((seed + fillerIdx * 7) % 30);
 
     filler.push({
       id: `GEN-${routeKey.replace(/[^a-z]/g, "")}-${dep.replace(":", "")}`,
       from, to,
       dep,
       arr: addHours(dep, durationH),
-      price: 2500 + ((seed + fillerIdx * 17) % 8) * 500, // 2500–6000 XAF range
+      price: 2500 + ((seed + fillerIdx * 17) % 8) * 500,
       seats: seatsAvail,
       total: seatsAvail + 10 + ((seed + fillerIdx * 5) % 20),
       plate: `GN-${String((seed + fillerIdx * 13) % 9999).padStart(4, "0")}-X`,
@@ -481,7 +535,7 @@ export default function SearchResultsScreen() {
   };
   const [showOnlyAvailable, setShowOnlyAvailable] = useState(false);
 
-  const rawBuses = useMemo(() => getAvailableBuses(from, to, time), [from, to, time]);
+  const rawBuses = useMemo(() => getAvailableBuses(from, to, time, date), [from, to, time, date]);
 
   const filtered = useMemo(() => {
     let list = [...rawBuses];
@@ -525,6 +579,16 @@ export default function SearchResultsScreen() {
         <View style={s.hCircle1} />
         <View style={s.hCircle2} />
       </View>
+
+      {/* Today's time notice */}
+      {isDateToday(date) && (
+        <View style={{ backgroundColor: "#FEF3C7", marginHorizontal: 16, marginTop: 8, borderRadius: 12, padding: 10, borderWidth: 1, borderColor: "#FDE68A", flexDirection: "row", alignItems: "center" }}>
+          <Text style={{ fontSize: 14, marginRight: 6 }}>⏰</Text>
+          <Text style={{ fontSize: 12, color: "#92400E", fontWeight: "600", flex: 1 }}>
+            Showing only buses that haven't departed yet today. Past departures are hidden.
+          </Text>
+        </View>
+      )}
 
       {/* Results count pill */}
       <View style={s.resultsPill}>
@@ -578,8 +642,9 @@ export default function SearchResultsScreen() {
             <Text style={s.emptyEmoji}>🚌</Text>
             <Text style={s.emptyTitle}>No buses found</Text>
             <Text style={s.emptySub}>
-              Try adjusting your filters or check another date.{"\n"}
-              Route: {from} → {to}
+              {isDateToday(date) && time
+                ? `The ${time} departure has already passed for today.\nPlease search with a future departure time or select a different date.`
+                : `Try adjusting your filters or check another date.\nRoute: ${from} → ${to}`}
             </Text>
             <TouchableOpacity style={s.emptyBtn} onPress={() => router.back()}>
               <Text style={s.emptyBtnText}>← Change Search</Text>
