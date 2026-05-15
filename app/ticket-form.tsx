@@ -15,6 +15,7 @@ import {
   View,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import { saveBooking } from "../context/BookingsStore";
 
 // ─── COLOURS ──────────────────────────────────────────────────────────────────
 const PURPLE_DARK = "#4C1D95";
@@ -283,7 +284,7 @@ export default function TicketFormScreen() {
     }
   };
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!firstName.trim() || !lastName.trim()) {
       Alert.alert("Required", "Please enter your full name."); return;
     }
@@ -293,6 +294,34 @@ export default function TicketFormScreen() {
     if (!idNumber.trim()) {
       Alert.alert("Required", "Please enter your ID number."); return;
     }
+
+    const ticketNumber = `TKT-${bookingRef}-${Date.now().toString().slice(-4)}`;
+    const fullNameVal = `${firstName.trim()} ${lastName.trim()}`;
+
+    // Persist booking so "My Bookings" tab can retrieve it
+    await saveBooking({
+      bookingRef,
+      ticketNumber,
+      agency,
+      from, to, date, dep, arr, plate, busClass,
+      seats: seatList,
+      price: priceNum,
+      totalAmount: priceNum * seatList.length,
+      paymentMethod,
+      bankName,
+      passengerName: fullNameVal,
+      age,
+      phone,
+      nationality,
+      idType,
+      idNumber,
+      idImageUri: idImageUri ?? undefined,
+      receiptUri,
+      busColor,
+      createdAt: new Date().toISOString(),
+      status: "pending",
+    });
+
     // Show ticket
     setShowTicket(true);
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();

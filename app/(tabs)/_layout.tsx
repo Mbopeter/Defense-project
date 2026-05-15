@@ -65,6 +65,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="my-bookings"
+        options={{
+          title: "My Bookings",
+          tabBarIcon: ({ focused }) => (
+            <TabIcon emoji="🎟️" label="My Bookings" focused={focused} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
